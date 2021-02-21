@@ -36,6 +36,7 @@ from lbry.wallet.server.db.revertable import RevertablePut, RevertableDelete, Re
 from lbry.wallet.server.db import DB_PREFIXES
 from lbry.wallet.server.db.prefixes import Prefixes
 from lbry.wallet.server.db.claimtrie import StagedClaimtrieItem, get_update_effective_amount_ops, length_encoded_name
+from lbry.wallet.server.db.claimtrie import get_expiration_height
 
 UTXO = namedtuple("UTXO", "tx_num tx_pos tx_hash height value")
 
@@ -322,16 +323,17 @@ class LevelDB:
         root_tx_num, root_idx, value, name, tx_num, idx = self.db.get_root_claim_txo_and_current_amount(
             claim_hash
         )
-        activation_height = 0
+        height = bisect_right(self.tx_counts, tx_num)
         effective_amount = self.db.get_support_amount(claim_hash) + value
         signing_hash = self.get_channel_for_claim(claim_hash)
+        activation_height = 0
         if signing_hash:
             count = self.get_claims_in_channel_count(signing_hash)
         else:
             count = 0
         return StagedClaimtrieItem(
-            name, claim_hash, value, effective_amount, activation_height, tx_num, idx, root_tx_num, root_idx,
-            signing_hash, count
+            name, claim_hash, value, effective_amount, activation_height, get_expiration_height(height), tx_num, idx,
+            root_tx_num, root_idx, signing_hash, count
         )
 
     def get_effective_amount(self, claim_hash):
@@ -362,6 +364,15 @@ class LevelDB:
 
     def get_channel_for_claim(self, claim_hash) -> Optional[bytes]:
         return self.db.get(DB_PREFIXES.claim_to_channel.value + claim_hash)
+
+    def get_expired_by_height(self, height: int):
+        start_prefix = DB_PREFIXES.claim_expiration.value + struct.pack(b'>L', 0)
+        stop_prefix = DB_PREFIXES.claim_expiration.value + struct.pack(b'>L', height)
+        expired = {}
+        for _k, _v in self.db.iterator(start=start_prefix, stop=stop_prefix):
+            k, v = Prefixes.claim_expiration.unpack_item(_k, _v)
+            expired[v.claim_hash] = (k.tx_num, k.position, v.name)
+        return expired
 
     # def add_unflushed(self, hashXs_by_tx, first_tx_num):
     #     unflushed = self.history.unflushed
